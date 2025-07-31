@@ -1754,14 +1754,14 @@ class ChangeDependencyGroupIdAndArtifactIdTest implements RewriteTest {
     void changeExclusionsDisabled() {
         rewriteRun(
                 spec -> spec.recipe(new ChangeDependencyGroupIdAndArtifactId(
-                  "org.springframework", 
-                  "spring-web", 
-                  "org.springframework.boot", 
-                  "spring-boot-starter-web", 
-                  null, 
-                  null, 
-                  null, 
-                  null, 
+                  "org.springframework",
+                  "spring-web",
+                  "org.springframework.boot",
+                  "spring-boot-starter-web",
+                  null,
+                  null,
+                  null,
+                  null,
                   false
                 )), // changeExclusions = false
                 pomXml(
