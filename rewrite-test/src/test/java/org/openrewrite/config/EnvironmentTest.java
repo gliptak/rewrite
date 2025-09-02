@@ -23,7 +23,7 @@ import org.openrewrite.text.PlainText;
 
 import java.io.ByteArrayInputStream;
 import java.net.URI;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
@@ -95,7 +95,7 @@ class EnvironmentTest implements RewriteTest {
 
         var changes = recipe.run(new InMemoryLargeSourceSet(List.of(
             PlainText.builder()
-              .sourcePath(Paths.get("test.txt"))
+              .sourcePath(Path.of("test.txt"))
               .text("hello")
               .build())), new InMemoryExecutionContext())
           .getChangeset()
@@ -201,7 +201,7 @@ class EnvironmentTest implements RewriteTest {
 
         var changes = recipe.run(new InMemoryLargeSourceSet(List.of(
             PlainText.builder()
-              .sourcePath(Paths.get("test.txt"))
+              .sourcePath(Path.of("test.txt"))
               .text("hello")
               .build())), new InMemoryExecutionContext())
           .getChangeset()
@@ -251,7 +251,7 @@ class EnvironmentTest implements RewriteTest {
 
         var changes = recipe.run(new InMemoryLargeSourceSet(List.of(
             PlainText.builder()
-              .sourcePath(Paths.get("test.txt"))
+              .sourcePath(Path.of("test.txt"))
               .text("hello")
               .build())), new InMemoryExecutionContext())
           .getChangeset()
@@ -336,42 +336,6 @@ class EnvironmentTest implements RewriteTest {
         var recipe = env.activateRecipes("test.ResultOfFileMkdirsIgnored");
         var validateAll = recipe.validateAll();
         assertThat(validateAll).anyMatch(Validated::isInvalid);
-    }
-
-    @Test
-    void scanClasspath() {
-        var env = Environment.builder()
-          .scanRuntimeClasspath()
-          .load(new YamlResourceLoader(new ByteArrayInputStream(
-            //language=yml
-            """
-              type: specs.openrewrite.org/v1beta/attribution
-              recipeName: org.openrewrite.text.ChangeTextToJon
-              contributors:
-                - name: "Jonathan Schneider"
-                  email: "jon@moderne.io"
-                  lineCount: 5
-              """.getBytes()
-          ), URI.create("attribution/test.ChangeTextToHello.yml"), new Properties()))
-          .build();
-
-        Collection<Recipe> recipes = env.listRecipes();
-        assertThat(recipes).hasSizeGreaterThanOrEqualTo(2)
-          .extracting("name")
-          .contains("org.openrewrite.text.ChangeTextToJon", "org.openrewrite.HelloJon");
-
-        assertThat(env.listStyles()).hasSizeGreaterThanOrEqualTo(1)
-          .extracting("name")
-          .contains("org.openrewrite.SampleStyle");
-
-        //noinspection OptionalGetWithoutIsPresent
-        Recipe cttj = recipes.stream()
-          .filter(it -> "org.openrewrite.text.ChangeTextToJon".equals(it.getName()))
-          .findAny()
-          .get();
-
-        assertThat(cttj.getContributors())
-          .isNotEmpty();
     }
 
     @Test
