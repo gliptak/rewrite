@@ -33,6 +33,7 @@ dependencies {
 
     testImplementation("org.assertj:assertj-core:latest.release")
     testImplementation(project(":rewrite-test"))
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 tasks.withType<Javadoc> {
