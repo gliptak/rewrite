@@ -1799,7 +1799,8 @@ class ChangeDependencyGroupIdAndArtifactIdTest implements RewriteTest {
             null,
             null,
             null,
-            null
+            null,
+            true
           )),
           pomXml(
             """
