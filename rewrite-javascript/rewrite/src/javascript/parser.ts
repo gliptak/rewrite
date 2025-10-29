@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 import ts from 'typescript';
+import * as path from 'path';
 import {
     Comment,
     emptyContainer,
@@ -96,6 +97,7 @@ export class JavaScriptParser extends Parser {
             allowSyntheticDefaultImports: true,
             experimentalDecorators: true,
             emitDecoratorMetadata: true,
+            forceConsistentCasingInFileNames: false,
             jsx: ts.JsxEmit.Preserve,
             baseUrl: relativeTo || process.cwd()
         };
@@ -115,7 +117,11 @@ export class JavaScriptParser extends Parser {
 
         // Populate inputFiles map and remove from cache if necessary
         for (const input of inputs) {
-            const sourcePath = parserInputFile(input);
+            let sourcePath = parserInputFile(input);
+            // If relativeTo is set and path is not absolute, make it absolute
+            if (this.relativeTo && !path.isAbsolute(sourcePath)) {
+                sourcePath = path.join(this.relativeTo, sourcePath);
+            }
             inputFiles.set(sourcePath, input);
             // Remove from cache if previously cached
             this.sourceFileCache && this.sourceFileCache.delete(sourcePath);
@@ -186,6 +192,61 @@ export class JavaScriptParser extends Parser {
         host.readFile = (fileName) => {
             const input = inputFiles.get(fileName);
             return input ? parserInputRead(input) : ts.sys.readFile(fileName);
+        };
+
+        // Custom module resolution to handle in-memory imports
+        // This is required because TypeScript's default module resolution looks for files on disk,
+        // but our source files only exist in memory (in the inputFiles map)
+        host.resolveModuleNameLiterals = (moduleLiterals, containingFile) => {
+            const resolvedModules: ts.ResolvedModuleWithFailedLookupLocations[] = [];
+            const containingDir = path.dirname(containingFile);
+
+            for (const moduleLiteral of moduleLiterals) {
+                const moduleName = moduleLiteral.text;
+
+                // For relative imports, try to find in inputFiles first
+                if (moduleName.startsWith('.')) {
+                    const extensions = ['.tsx', '.ts', '.jsx', '.js', '.mts', '.cts'];
+                    let resolved: string | undefined;
+
+                    for (const ext of extensions) {
+                        // Try with extension
+                        const candidate = path.join(containingDir, moduleName + ext);
+                        if (inputFiles.has(candidate)) {
+                            resolved = candidate;
+                            break;
+                        }
+                        // Also try exact match (if moduleName already has extension)
+                        const exactCandidate = path.join(containingDir, moduleName);
+                        if (inputFiles.has(exactCandidate)) {
+                            resolved = exactCandidate;
+                            break;
+                        }
+                    }
+
+                    if (resolved) {
+                        resolvedModules.push({
+                            resolvedModule: {
+                                resolvedFileName: resolved,
+                                extension: path.extname(resolved) as ts.Extension,
+                                isExternalLibraryImport: false,
+                            }
+                        });
+                        continue;
+                    }
+                }
+
+                // Fall back to TypeScript's default resolution for node_modules and absolute paths
+                const result = ts.resolveModuleName(
+                    moduleName,
+                    containingFile,
+                    this.compilerOptions,
+                    host
+                );
+
+                resolvedModules.push(result);
+            }
+            return resolvedModules;
         };
 
         // Create a new Program, passing the oldProgram for incremental parsing
@@ -967,11 +1028,10 @@ export class JavaScriptParserVisitor {
             };
         }
 
-        let name: J.Identifier = !node.name
-            ? this.mapIdentifier(node, "")
-            : ts.isStringLiteral(node.name)
-                ? this.mapIdentifier(node.name, node.name.getText())
-                : this.visit(node.name);
+        let name = this.mapMethodName(node) as J.Identifier;
+        name = produce(name, draft => {
+            draft.markers = this.maybeAddOptionalMarker(draft, node);
+        });
 
         return {
             kind: J.Kind.MethodDeclaration,
@@ -983,9 +1043,7 @@ export class JavaScriptParserVisitor {
             typeParameters: this.mapTypeParametersAsObject(node),
             returnTypeExpression: this.mapTypeInfo(node),
             nameAnnotations: [],
-            name: produce(name, draft => {
-                draft.markers = this.maybeAddOptionalMarker(draft, node);
-            }),
+            name: name,
             parameters: this.mapCommaSeparatedList(this.getParameterListNodes(node)),
             methodType: this.mapMethodType(node)
         };
@@ -1003,7 +1061,7 @@ export class JavaScriptParserVisitor {
             }
         });
 
-        let name: Expression = node.name ? this.visit(node.name) : this.mapIdentifier(node, "");
+        let name = this.mapMethodName(node);
         name = produce(name, draft => {
             draft.markers = this.maybeAddOptionalMarker(draft, node);
         });
@@ -1040,6 +1098,14 @@ export class JavaScriptParserVisitor {
             body: node.body && this.convert<J.Block>(node.body),
             methodType: this.mapMethodType(node)
         };
+    }
+
+    private mapMethodName(node: ts.NamedDeclaration): J.Identifier | JS.ComputedPropertyName {
+        return !node.name
+            ? this.mapIdentifier(node, "")
+            : ts.isStringLiteral(node.name) || ts.isNumericLiteral(node.name)
+                ? this.mapIdentifier(node.name, node.name.getText())
+                : this.visit(node.name);
     }
 
     private mapTypeInfo(node: ts.MethodDeclaration | ts.PropertyDeclaration | ts.VariableDeclaration | ts.ParameterDeclaration
@@ -1093,7 +1159,7 @@ export class JavaScriptParserVisitor {
     }
 
     visitGetAccessor(node: ts.GetAccessorDeclaration): J.MethodDeclaration | JS.ComputedPropertyMethodDeclaration {
-        const name = this.visit(node.name);
+        const name = this.mapMethodName(node);
         if (ts.isComputedPropertyName(node.name)) {
             return {
                 kind: JS.Kind.ComputedPropertyMethodDeclaration,
@@ -1119,7 +1185,7 @@ export class JavaScriptParserVisitor {
             modifiers: this.mapModifiers(node),
             returnTypeExpression: this.mapTypeInfo(node),
             nameAnnotations: [],
-            name: name,
+            name: name as J.Identifier,
             parameters: this.mapCommaSeparatedList(this.getParameterListNodes(node)),
             body: node.body && this.convert<J.Block>(node.body),
             methodType: this.mapMethodType(node)
@@ -1127,7 +1193,7 @@ export class JavaScriptParserVisitor {
     }
 
     visitSetAccessor(node: ts.SetAccessorDeclaration): J.MethodDeclaration | JS.ComputedPropertyMethodDeclaration {
-        const name = this.visit(node.name);
+        const name = this.mapMethodName(node);
         if (ts.isComputedPropertyName(node.name)) {
             return {
                 kind: JS.Kind.ComputedPropertyMethodDeclaration,
@@ -1151,7 +1217,7 @@ export class JavaScriptParserVisitor {
             leadingAnnotations: this.mapDecorators(node),
             modifiers: this.mapModifiers(node),
             nameAnnotations: [],
-            name: name,
+            name: name as J.Identifier,
             parameters: this.mapCommaSeparatedList(this.getParameterListNodes(node)),
             body: node.body && this.convert<J.Block>(node.body),
             methodType: this.mapMethodType(node)
@@ -3012,15 +3078,15 @@ export class JavaScriptParserVisitor {
             return this.rightPadded({
                 kind: J.Kind.VariableDeclarations,
                 id: randomId(),
-                prefix: emptySpace,
+                prefix: isMulti ? this.prefix(declaration) : emptySpace,
                 markers: emptyMarkers,
                 leadingAnnotations: [],
-                modifiers: modifiers,
+                modifiers: isMulti ? [] : modifiers,
                 typeExpression: this.mapTypeInfo(declaration),
                 variables: [this.rightPadded({
                     kind: J.Kind.NamedVariable,
                     id: randomId(),
-                    prefix: this.prefix(declaration),
+                    prefix: isMulti ? emptySpace : this.prefix(declaration),
                     markers: produce(emptyMarkers, draft => {
                         if (declaration.exclamationToken) {
                             draft.markers.push({
@@ -3054,14 +3120,8 @@ export class JavaScriptParserVisitor {
                 id: randomId(),
                 prefix: emptySpace,
                 markers: emptyMarkers,
-                modifiers: [],
-                variables: varDecls.map((v, idx) => {
-                    return produce(v, draft => {
-                        if (idx > 0) {
-                            draft.element.modifiers = [];
-                        }
-                    });
-                })
+                modifiers: modifiers,
+                variables: varDecls
             };
         }
     }
@@ -3103,16 +3163,7 @@ export class JavaScriptParserVisitor {
             leadingAnnotations: [],
             nameAnnotations: [],
             modifiers: this.mapModifiers(node),
-            name: node.name ? this.visit(node.name) : {
-                kind: J.Kind.Identifier,
-                id: randomId(),
-                prefix: emptySpace,
-                markers: emptyMarkers,
-                annotations: [],
-                simpleName: "",
-                type: undefined,
-                fieldType: undefined
-            },
+            name: this.mapMethodName(node) as J.Identifier,
             typeParameters: this.mapTypeParametersAsObject(node),
             parameters: this.mapCommaSeparatedList(this.getParameterListNodes(node)),
             returnTypeExpression: this.mapTypeInfo(node),
